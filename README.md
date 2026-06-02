@@ -1,6 +1,6 @@
 # From *Evropa* to *Gayropa*: Euroskepticism and Homonegativity in Serbia
 
-This project examines the relationship between skepticism toward the European Union and attitudes of rejection toward gay men and lesbian women in Serbia, using data from the European Social Survey Round 11 (2023). Submitted for **SIMM61 – Quantitative Data Analysis in R**, Graduate School, Lund University (Autumn 2025).
+This project examines the relationship between skepticism toward the European Union and attitudes of rejection toward gay men and lesbian women in Serbia, using data from the European Social Survey Round 11 (2023). Submitted for SIMM61 – Quantitative Data Analysis in R, Graduate School, Lund University (Autumn 2025).
 
 ## Research Question
 
