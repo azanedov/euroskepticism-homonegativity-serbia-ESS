@@ -1,0 +1,495 @@
+---
+title: '"From Evropa to Gayropa": Exploring the Relationship Between Euroskepticism and the Rejection of Gay Men and Lesbian Women in Serbia'
+author: "Vanessa Azañedo"
+date: "2026-02-16"
+output:
+  html_document: default
+  word_document: default
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(
+  echo = TRUE,
+  message = FALSE,
+  warning = FALSE,
+  fig.width = 9,   
+  fig.height = 6,
+  out.width = "50%", 
+  dpi = 300
+)
+```
+
+# 1. Data Preparation
+
+## 1.1 Environment Setup
+
+We set up the path, load the necessary libraries, and import the ESS11 round 4 file.
+
+```{r, message = FALSE, warning = FALSE}
+#Save the path
+path <- "/Users/str8d8/SSDA/SIMM61/IndividualPaper" # Change to your working directory
+setwd(path) 
+
+#Load packages
+library(tidyverse)
+library(readr)
+library(ggplot2)
+library(broom)
+library(skimr)
+library(dplyr)
+library(psych)
+library(forcats)
+library(stargazer)
+library(webshot2)
+library(modelsummary)
+library(gt)
+library(gtsummary)
+library(kableExtra)
+library(car)
+library(sjPlot)
+library(rnaturalearth)
+library(rnaturalearthdata)
+library(sf)
+
+# Import the file
+ds <- file.path(path, "ESS11e04_0.csv") # Change it accordingly
+ESS11 <- read_csv(ds)
+```
+
+## 1.2 Data Preprocessing
+
+The data set is filtered to only consider observations from Serbia.
+```{r, message = FALSE, warning = FALSE}
+# Filter observations 
+ESS11_RS <- ESS11 %>% 
+  filter(cntry == "RS")
+```
+
+We use a tidyverse pipeline to isolate relevant variables, recode missing values, and delete rows that contain them.
+```{r, message = FALSE, warning = FALSE}
+# 1. Select and mutate variables using a pipeline
+ESS11_RS <- ESS11_RS %>%
+  # Select
+  select(
+    agea, gndr, eduyrs, rlgdgr,      # Control variables
+    atcherp, euftf, trstep,                    # Attitudes toward EU
+    freehms, hmsfmlsh, hmsacld                 # LGBT Acceptance
+  ) %>%
+  # 2. Assign NAs 
+  mutate(
+    # Custom thresholds: agea > 150, eduyrs >= 77
+    agea     = if_else(agea > 150 | agea == 999, NA_real_, as.numeric(agea)),
+    eduyrs   = if_else(eduyrs >= 77, NA_real_, as.numeric(eduyrs)),
+    # Standard ESS 0-10 scales (77, 88, 99 are missing)
+    across(c(rlgdgr, atcherp, euftf, trstep), ~if_else(.x >= 77, NA_real_, as.numeric(.x))),
+    # Standard ESS 1-5 scales (7, 8, 9 are missing)
+    across(c(freehms, hmsfmlsh, hmsacld), ~if_else(.x >= 7, NA_real_, as.numeric(.x))),
+    # Gender becomes NA if it is NOT 1 (Male) or 2 (Female)
+    gndr     = if_else(!gndr %in% c(1, 2), NA_real_, as.numeric(gndr)),
+  ) %>%
+  # 3. Drop rows with missing values
+  drop_na(agea, gndr, eduyrs, rlgdgr, freehms, hmsfmlsh, hmsacld, atcherp, euftf, trstep) %>%
+  # 4. Finalize variable types
+mutate(
+    gndr = as_factor(gndr),
+    across(where(is.logical), as.numeric)
+  )
+```
+
+## 1.3 Data Overview
+
+We briefly inspect the data.
+```{r, message = FALSE, warning = FALSE}
+# Inspect the data
+# Not using View because it obstructs the knitting process >:(
+glimpse(ESS11_RS)
+head(ESS11_RS)
+tail(ESS11_RS)
+```
+
+## 1.4 European Context
+
+To provide context, we process the full European dataset to compare average LG rejection scores across all participating ESS11 countries.
+```{r}
+# 1. Create clean data set
+europe_clean <- ESS11 %>%
+  # Handle NAs for the three variables
+  mutate(across(c(freehms, hmsacld, hmsfmlsh), ~ifelse(. > 5, NA, .))) %>%
+  # Reverse ONLY hmsfmlsh so 1 becomes 5 (High Rejection)
+  mutate(hmsfmlsh_rev = 6 - hmsfmlsh) %>%
+  # Calculate the index
+  mutate(LG_Rejection_Index = rowMeans(across(c(freehms, hmsacld, hmsfmlsh_rev)), na.rm = TRUE)) %>%
+  filter(!is.na(LG_Rejection_Index))
+
+# 2. Aggregate by country (The 'country_comparison' object)
+country_comparison <- europe_clean %>%
+  group_by(cntry) %>%
+  summarise(
+    rejection_score = weighted.mean(LG_Rejection_Index, w = pspwght, na.rm = TRUE)
+  )
+
+# 3. Prepare geography
+world <- ne_countries(scale = "medium", returnclass = "sf")
+europe_geo <- world %>% filter(continent == "Europe")
+
+# 4 Join using the more reliable 'iso_a2_eh' column since certain countries were not showing up initially
+map_final <- europe_geo %>%
+  left_join(country_comparison, by = c("iso_a2_eh" = "cntry"))
+
+# 5. Plot with BuPu Palette
+ggplot(data = map_final) +
+  geom_sf(aes(fill = rejection_score), color = "white", size = 0.1) +
+  # BuPu: Light Blue to Deep Purple
+  # na.value is set to a very light grey for countries not in ESS11
+  scale_fill_distiller(palette = "BuPu", 
+                       direction = 1, 
+                       name = "Rejection of gays and lesbians",
+                       na.value = "#f0f0f0") + 
+  # Focus coordinates
+  coord_sf(xlim = c(-12, 45), ylim = c(35, 70), expand = FALSE) +
+  labs(title = "Rejection of Gays and Lesbians across Europe",
+       subtitle = "Purple = Higher rejection | Azure  = Lower rejection",
+       caption = "Data: ESS Round 11 | Missing values in light grey") +
+  theme_minimal() +
+  theme(panel.grid = element_blank()) # Clean up the background
+```
+
+# 2. Variable Construction
+
+## 2.1 Euroskepticism Index
+
+We reverse the scale of the EU items to ensure that higher numeric values consistently represent higher levels of rejection.
+```{r, message = FALSE, warning = FALSE}
+# Reversing EU items so HIGHER scores = HIGHER REJECTION
+ESS11_RS <- ESS11_RS %>%
+  mutate(
+    atcherp_rev = 10 - atcherp,
+    euftf_rev   = 10 - euftf,
+    trstep_rev  = 10 - trstep
+  )
+```
+
+We conduct a factor analysis and reliability check to construct a unified latent index for Euroskepticism.
+```{r}
+# 1. Subset the REVERSED items
+EU_items <- ESS11_RS %>% 
+  select(atcherp_rev, euftf_rev, trstep_rev)
+# 2. Run Factor Analysis
+fa_EU <- fa(
+  EU_items,
+  nfactors = 1, 
+  rotate   = "none",      # Rotation is omitted here because we only have 1 factor
+  fm       = "ml",        # "ml" = Maximum Likelihood factor extraction method
+  scores   = "regression" # Compute factor scores for each respondent using regression scoring 
+)
+# Display loadings
+print(fa_EU$loadings, cutoff = 0.3)
+# 3. Append factor scores to the main dataframe
+# We use the factor score as our latent variable for "Euroskepticism"
+ESS11_RS$Euroskepticism_Index <- as.numeric(fa_EU$scores) 
+# 4. Check Reliability
+alpha_EU <- psych::alpha(EU_items, check.keys = TRUE)
+print(alpha_EU$total$raw_alpha)
+```
+
+I check the range to make sure all the NAs have been effectively removed.
+```{r}
+# Check the range of items
+summary(ESS11_RS %>% select(atcherp_rev, euftf_rev, trstep_rev))
+```
+
+We visualize the distribution of the Euroskepticism latent factor scores to assess normality and spread.
+```{r, message = FALSE, warning = FALSE}
+ggplot(ESS11_RS, aes(x = Euroskepticism_Index)) +
+  geom_histogram(aes(y = ..density..), bins = 30, fill = "cornflowerblue", color = "white") +
+  geom_density(color = "darkblue", size = 1) +
+  labs(
+    title = "Distribution of Euroskepticism Index",
+    subtitle = "Latent Factor Scores (Mean = 0, SD = 1)",
+    x = "Euroskepticism (Factor Score)",
+    y = "Density"
+  ) +
+  theme_minimal()
+```
+
+## 2.2 Rejection of Gays and Lesbians Index
+
+We reverse the 'hmsfmlsh' item to align it with the other indicators so that high scores represent increased rejection.
+```{r, message = FALSE, warning = FALSE}
+# Reverse ONLY hmsfmlsh so 5 = higher rejection for all three items
+ESS11_RS <- ESS11_RS %>% 
+  mutate(hmsfmlsh_rev = 6 - hmsfmlsh)
+```
+
+We use factor analysis to extract a single latent variable representing the rejection of gay men and lesbian women.
+```{r}
+# 1. Prepare items for REJECTION of Gays and Lesbians
+# We want 5 to be the "Anti" end for all.
+LG_items <- ESS11_RS %>% 
+  select(freehms, hmsacld, hmsfmlsh_rev) 
+# 2. Run Factor Analysis
+# We extract 1 factor representing the latent "Rejection of Gays and Lesbians" construct
+fa_LG <- fa(
+  LG_items,
+  nfactors = 1, 
+  rotate   = "none", 
+  fm       = "ml", 
+  scores   = "regression"
+)
+# 3. Append factor scores
+# Higher values = Higher REJECTION of Gays and Lesbians
+ESS11_RS$LG_Rejection_Index <- as.numeric(fa_LG$scores)
+# 4. Check Reliability
+alpha_LG <- psych::alpha(LG_items, check.keys = TRUE)
+print(alpha_LG$total$raw_alpha)
+```
+
+We plot the distribution of the Gays and Lesbians Rejection Index to inspect the frequency of homophobic attitudes in the sample.
+```{r}
+# Visualization of the Rejection of Gays and Lesbians Index
+ggplot(ESS11_RS, aes(x = LG_Rejection_Index)) +
+  # Histogram with density scaling
+  geom_histogram(aes(y = ..density..), bins = 30,
+                 fill = "#F4A3A3",   # light red
+                 color = "white",
+                 alpha = 0.7) +
+  # Density curve overlay
+  geom_density(color = "#8B0000", size = 1) +  # dark red
+  # Labels
+  labs(
+    title = "Distribution of Rejection of Gays and Lesbians Index",
+    subtitle = "Latent Factor Scores (Mean = 0, SD = 1)",
+    x = "Rejection of Gays and Lesbians Index (Factor Score)",
+    y = "Density"
+  ) +
+  theme_minimal()
+```
+
+# 3. Regression Models
+
+## 3.1 Initial Models
+
+### Model 1: Focal Bivariate Model
+
+We estimate the baseline bivariate relationship between Euroskepticism and LG rejection through a simple linear regression.
+```{r}
+# Inspect the relationship between the focal variables
+Model1 <- lm(LG_Rejection_Index ~ Euroskepticism_Index, data = ESS11_RS)
+summary(Model1)
+# Run diagnostics 
+plot(Model1)
+```
+
+### Model 2: Full Model
+
+We expand the model to include socio-demographic controls to test the focal relationship for potential spuriousness.
+```{r}
+# We include control variables such as gender, age, years of education and religiousness
+Model2 <- lm(LG_Rejection_Index ~ Euroskepticism_Index +
+               gndr + 
+               agea + 
+               eduyrs + 
+               rlgdgr, 
+             data = ESS11_RS)
+summary(Model2)
+# Run diagnostics  
+plot(Model2)
+```
+
+We calculate Variance Inflation Factor (VIF) scores to ensure that the multivariate model does not suffer from multicollinearity.
+```{r}
+# Check for absence of multicollinearity
+vif(Model2)
+```
+
+We calculate Cook's Distance to identify and remove influential outliers that might bias the regression results.
+```{r}
+# Display the cases with the highest numbers of Cook's D
+CooksD <- cooks.distance(Model2)
+sort(CooksD, decreasing = TRUE) %>% head()
+
+# Delete outliers
+ESS11_RS_clean <- ESS11_RS[-c(375, 779, 999), ] 
+```
+
+## 3.2 Analytical Sample Descriptives
+
+Having deleted the outlier cases, we create a table with a summary of descriptives for the final analytical sample.
+```{r, message = FALSE, warning = FALSE}
+# Prepare the analytical sample
+# Ensure your path and folders are ready
+if (!dir.exists(file.path(path, "outputs"))) {
+  dir.create(file.path(path, "outputs"), recursive = TRUE)
+}
+
+analytical_sample <- ESS11_RS_clean %>%
+  mutate(female = if_else(gndr == 2, 1, 0)) %>%
+  select(agea, female, eduyrs) %>%
+  as.data.frame()
+
+# Define filenames
+html_desc <- file.path(path, "outputs", "demographics.html")
+png_desc  <- file.path(path, "outputs", "demographics.png")
+
+# Generate the polished table using the same "stargazer" style
+stargazer(
+  analytical_sample, 
+  type = "html", 
+  title = "Demographic Characteristics of the Analytical Sample",
+  covariate.labels = c("Age", "Female (Dummy)", "Education (Years)"),
+  digits = 2,
+  summary.stat = c("n", "mean", "sd", "min", "max"),
+  notes = "Source: European Social Survey Round 11 (2023).",
+  style = "apsr", # Matches the regression table style
+  out = html_desc
+)
+
+# Convert to PNG
+webshot2::webshot(
+  url  = html_desc,
+  file = png_desc,
+  zoom = 1
+)
+```
+
+## 3.3 Final Models
+
+After removing the three most influential outliers, we run the models again.
+
+### Final Model 1: Bivariate Model
+
+We re-estimate the bivariate model using the cleaned dataset.
+```{r}
+# Model 1
+Model1_final <- lm(LG_Rejection_Index ~ Euroskepticism_Index, data = ESS11_RS_clean)
+summary(Model1_final)
+# Run diagnostics 
+plot(Model1_final)
+```
+
+### Final Model 2: Full Model with Control Variables
+
+Again we re-estimate the full multivariate model on the cleaned data to obtain our final coefficients.
+```{r}
+# Full model (clean)
+Model2_final <- lm(LG_Rejection_Index ~ Euroskepticism_Index +
+               gndr + 
+               agea + 
+               eduyrs + 
+               rlgdgr, 
+             data = ESS11_RS_clean)
+summary(Model2_final)
+
+# Diagnostics 
+plot(Model2_final)
+```
+
+We perform a final VIF check on the cleaned model to confirm the independence of our predictors.
+```{r}
+# Check for absence of multicollinearity 
+vif(Model2_final)
+```
+The VIF values for all predictors are very close to 1.0, indicating an absence of multicollinearity and confirming that each variable provides independent information to the model.
+
+## 3.4 Model Comparison
+
+We compare the fit of the bivariate and multivariate models.
+```{r}
+anova(Model1_final, Model2_final)
+```
+
+## 3.5 Visualizations
+
+We generate a scatter plot with a regression overlay to visualize the linear trend between Euroskepticism and rejection of gays and lesbians.
+```{r}
+# Create a scatter plot with the regression line
+ggplot(ESS11_RS_clean, aes(x = Euroskepticism_Index, y = LG_Rejection_Index)) +
+  # 1. Add points with 'jitter' to see the density in the spikes
+  geom_jitter(alpha = 0.3, color = "cornflowerblue") + 
+  # 2. Add the linear regression line
+  geom_smooth(method = "lm", color = "darkred", se = TRUE) +
+  # 3. Labeling
+  labs(title = "Relationship between Euroskepticism and Rejection of Gays and Lesbians",
+       subtitle = "Focal Bivariate Model",
+       x = "Euroskepticism",
+       y = "Rejection of Gays and Lesbians") +
+  theme_minimal()
+```
+
+We create a marginal effects plot to show the predicted values of LG rejection across the range of Euroskepticism, holding controls constant.
+```{r}
+# Create the Marginal Effects Plot
+plot_model(Model2_final, 
+           type = "pred", 
+           terms = "Euroskepticism_Index [all]", # Calculate predictions for the full range
+           title = "Predicted Rejection of Gays and Lesbians by Euroskepticism Levels",
+           axis.title = c("Euroskepticism", "Predicted Rejection of Gays and Lesbians Score")) +
+  # Adding a caption to explain the controls
+  labs(caption = "Adjusted for Gender, Age, Education, and Religiosity.\nShaded area represents 95% Confidence Interval.") +
+  theme_minimal()
+```
+
+We examine the influence of our controls with a forest plot.
+```{r}
+# Define a clean mapping for our variables
+# The order here determines the order on the graph (top to bottom)
+cm <- c(
+  'rlgdgr' = 'Religiosity',
+  'eduyrs' = 'Education (Years)',
+  'agea'   = 'Age',
+  'gndr2'  = 'Female (Dummy)',
+  'Euroskepticism_Index' = 'Euroskepticism (Focal IV)'
+)
+
+# Generate the plot
+modelplot(Model2_final, coef_map = cm) + 
+  geom_vline(xintercept = 0, color = "red", linetype = "dashed") +
+  theme_minimal() +
+  labs(
+    title = "Predictors of Rejection toward Gays and Lesbians",
+    x = "Coefficient Estimate (with 95% Confidence Interval)",
+    y = ""
+  )
+```
+
+Using stargazer, we create a final regression table comparing the bivariate and multivariate models.
+```{r, results = "hide"}
+# 1. First, make sure your folder is ready
+if (!dir.exists(file.path(path, "outputs"))) {
+  dir.create(file.path(path, "outputs"), recursive = TRUE)
+}
+
+# 2. Then, define your filenames
+html_file <- file.path(path, "outputs", "serbia_results.html")
+png_file  <- file.path(path, "outputs", "serbia_results.png")
+
+# 3. Now run the stargazer command
+stargazer(
+  Model1_final, Model2_final,
+  type = "html",
+  title = "Impact of Euroskepticism on Rejection of Gays and Lesbians in Serbia",
+  style = "apsr", # American Political Science Review style
+  column.labels = c("Bivariate", "Multivariate"),
+  dep.var.labels = "LG Rejection Index",
+  covariate.labels = c(
+    "Euroskepticism Index",
+    "Gender: Female",
+    "Age (Years)",
+    "Education (Years)",
+    "Religiosity",
+    "Constant"
+  ),
+  # Standard significance stars for sociology
+  star.cutoffs = c(0.05, 0.01, 0.001), 
+  omit.stat = c("ser", "f"), # Omit residual error and F-stat to keep it clean
+  notes = "Source: European Social Survey Round 11 (2023).",
+  out = html_file
+)
+
+# Convert the HTML table to PNG 
+webshot2::webshot(
+  url  = html_file,
+  file = png_file,
+  zoom = 2
+)
+```
